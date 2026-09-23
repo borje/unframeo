@@ -125,5 +125,8 @@ message FrameInfo {
 message FrameCapabilities { int32 max_video_width = 1; int32 max_video_height = 2; }
 message AsyncInformation  { string chia_id = 1; bool has_active_session = 2; }
 message ClientInfo        { string name = 1; string user_account_id = 2; sint64 profile_picture_id = 3; }
+// Asks the frame's owner to grant a permission (type 27): 1 = view photos,
+// 3 = manage photos. Shape read from yasoob/frameo-client, not from the app.
+message RequestPermission { int32 permission = 1; }
 message EncryptedData     { bytes nonce = 1; string encrypted_message = 2; }  // NB: field2 is bytes in practice
 message PairingCode       { string pairing_code = 1; int64 ttl = 2; }

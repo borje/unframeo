@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/borje/unframeo/internal/config"
 	"github.com/borje/unframeo/internal/frameo"
@@ -885,5 +886,174 @@ func TestGetSaysNothingWhenTheFrameHonouredTheBound(t *testing.T) {
 	}
 	if strings.Contains(out, "Note:") {
 		t.Errorf("a frame that honoured the bound was told it had not:\n%s", out)
+	}
+}
+
+func TestPairSavesADefaultClientName(t *testing.T) {
+	path := withNoConfig(t)
+	frame := frameotest.New()
+	server, code := startFakeFrame(t, frame)
+
+	captureStderr(t)
+	out, err := runCLI(t, "-server", server, "pair", code)
+	if err != nil {
+		t.Fatalf("pair: %v", err)
+	}
+	if !strings.Contains(out, "The frame will show this client as") {
+		t.Errorf("pair did not say what the frame will call this client:\n%s", out)
+	}
+
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ClientName == "" || !strings.Contains(cfg.ClientName, "@") {
+		t.Errorf("client_name = %q, want user@host", cfg.ClientName)
+	}
+	if out, err = runCLI(t, "whoami"); err != nil || !strings.Contains(out, cfg.ClientName) {
+		t.Errorf("whoami = %q, %v; want it to show %q", out, err, cfg.ClientName)
+	}
+}
+
+func TestNameCommandShowsAndChangesTheName(t *testing.T) {
+	path := withConfig(t)
+
+	out, err := runCLI(t, "name")
+	if err != nil {
+		t.Fatalf("name: %v", err)
+	}
+	if !strings.Contains(out, "@") {
+		t.Errorf("name printed %q, want the default user@host", out)
+	}
+
+	if out, err = runCLI(t, "name", "Kitchen PC"); err != nil {
+		t.Fatalf("name Kitchen PC: %v", err)
+	}
+	if !strings.Contains(out, `"Kitchen PC"`) || !strings.Contains(out, path) {
+		t.Errorf("name printed %q, want the new name and the file it went to", out)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ClientName != "Kitchen PC" {
+		t.Errorf("client_name = %q after the change, want Kitchen PC", cfg.ClientName)
+	}
+	if out, err = runCLI(t, "name"); err != nil || strings.TrimSpace(out) != "Kitchen PC" {
+		t.Errorf("name = %q, %v; want just the saved name", out, err)
+	}
+
+	if _, err := runCLI(t, "name", " "); err == nil {
+		t.Error("want an error for a blank name")
+	}
+	if _, err := runCLI(t, "name", "a", "b"); err == nil {
+		t.Error("want an error for two names")
+	}
+}
+
+// The frame introduces itself to whoever connects by asking who they are; the
+// answer is the saved name, so a photo sent from the command line shows up
+// as coming from this machine.
+func TestCommandsIntroduceTheClientByItsSavedName(t *testing.T) {
+	withConfig(t)
+	frame := frameotest.New()
+	frame.AsksWhoIsCalling = true
+	server, code := startFakeFrame(t, frame)
+
+	if _, err := runCLI(t, "name", "Kitchen PC"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runCLI(t, "-server", server, "pair", code); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runCLI(t, "-server", server, "info"); err != nil {
+		t.Fatalf("info: %v", err)
+	}
+	// The introduction is sent before the command returns, but the fake
+	// frame handles messages one at a time and may still be behind it.
+	deadline := time.Now().Add(5 * time.Second)
+	for len(frame.ClientNames()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if names := frame.ClientNames(); len(names) == 0 || names[len(names)-1] != "Kitchen PC" {
+		t.Errorf("frame heard %q, want Kitchen PC", names)
+	}
+}
+
+func TestPermissionCommandWaitsForTheFrame(t *testing.T) {
+	withConfig(t)
+	frame := frameotest.New()
+	frame.Info.HasPermissionViewPhotos = false
+	frame.Info.HasPermissionManagePhotos = false
+	frame.PermissionType = frameo.TypeRequestPermission
+	frame.GrantOnRequest = true
+	server, code := startFakeFrame(t, frame)
+
+	if _, err := runCLI(t, "-server", server, "pair", code); err != nil {
+		t.Fatal(err)
+	}
+	out, err := runCLI(t, "-server", server, "permission", "manage")
+	if err != nil {
+		t.Fatalf("permission manage: %v", err)
+	}
+	if !strings.Contains(out, "Approve it on the frame") || !strings.Contains(out, "Granted.") {
+		t.Errorf("want the prompt and then the grant:\n%s", out)
+	}
+	if got := frame.PermissionRequests(); len(got) != 1 || got[0] != 3 {
+		t.Errorf("frame saw permission requests %v, want [3]", got)
+	}
+
+	if _, err := runCLI(t, "-server", server, "permission"); err == nil {
+		t.Error("want an error when no permission is named")
+	}
+	if _, err := runCLI(t, "-server", server, "permission", "everything"); err == nil {
+		t.Error("want an error for a permission the frame has no notion of")
+	}
+}
+
+func TestPermissionCommandSaysWhenAlreadyGranted(t *testing.T) {
+	withConfig(t)
+	frame := frameotest.New() // grants both by default
+	frame.PermissionType = frameo.TypeRequestPermission
+	server, code := startFakeFrame(t, frame)
+
+	if _, err := runCLI(t, "-server", server, "pair", code); err != nil {
+		t.Fatal(err)
+	}
+	out, err := runCLI(t, "-server", server, "permission", "view")
+	if err != nil {
+		t.Fatalf("permission view: %v", err)
+	}
+	if !strings.Contains(out, "already lets this client view photos") {
+		t.Errorf("want to be told the permission is already held:\n%s", out)
+	}
+	if got := frame.PermissionRequests(); len(got) != 0 {
+		t.Errorf("the client asked for %v although it already had the permission", got)
+	}
+}
+
+// A refusal for lack of permission is the first thing a new pairing meets
+// when it tries to list, and the frame's answer alone does not say what to do
+// about it.
+func TestRefusalHintsAtThePermissionCommand(t *testing.T) {
+	withConfig(t)
+	frame := frameotest.New()
+	frame.ListType = frameo.TypeGetAllMediaMetaData
+	frame.ListError = pb.Error_MISSING_PERMISSION
+	server, code := startFakeFrame(t, frame)
+
+	if _, err := runCLI(t, "-server", server, "pair", code); err != nil {
+		t.Fatal(err)
+	}
+	_, err := runCLI(t, "-server", server, "list")
+	if err == nil {
+		t.Fatal("list succeeded although the frame refused it")
+	}
+	if !strings.Contains(err.Error(), "unframeo permission") {
+		t.Errorf("err = %v, want it to name the permission command", err)
+	}
+	var fe *frameo.FrameError
+	if !errors.As(err, &fe) {
+		t.Errorf("err = %v, want the frame's refusal still recognisable underneath the hint", err)
 	}
 }

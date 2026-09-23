@@ -88,7 +88,7 @@ func TestLiveLocalInfo(t *testing.T) {
 		t.Fatalf("connecting directly to %s: %v", ep, err)
 	}
 	connected := time.Since(start)
-	c := frameo.NewClient(p, log)
+	c := frameo.NewClient(p, &frameo.Options{Logger: log, Name: "unframeo live test"})
 	defer c.Close()
 
 	info, err := c.GetInfo(ctx)
@@ -128,7 +128,7 @@ func TestLiveLocalServiceName(t *testing.T) {
 			if err != nil {
 				t.Fatalf("handshake with protocol %q: %v", tc.protocol, err)
 			}
-			c := frameo.NewClient(p, log)
+			c := frameo.NewClient(p, &frameo.Options{Logger: log, Name: "unframeo live test"})
 			defer c.Close()
 
 			// A frame that does not recognise the name still finishes the

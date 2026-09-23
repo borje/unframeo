@@ -71,7 +71,7 @@ func connectLive(t *testing.T) *frameo.Client {
 	if err != nil {
 		t.Fatalf("reaching the frame: %v", err)
 	}
-	c := frameo.NewClient(p, log)
+	c := frameo.NewClient(p, &frameo.Options{Logger: log, Name: "unframeo live test"})
 	t.Cleanup(func() { _ = c.Close() })
 	return c
 }
@@ -381,4 +381,39 @@ func TestLiveGetMediaRoundTrip(t *testing.T) {
 	}
 	t.Logf("sent %d bytes and %d came back: the frame re-encodes what it stores",
 		len(sent), len(got.Data))
+}
+
+// TestLiveRequestPermission sends a real permission request (27) and waits for
+// someone to tap Allow on the frame. It needs a person there, so it runs only
+// when UNFRAMEO_ASK_PERMISSION is set; the message number is read from
+// yasoob/frameo-client and this is the test that confirms it. Whether the
+// frame also learned this client's name is visible in the -v log: the
+// introduction goes out in answer to the frame's own GetInfo, which every
+// connection begins with.
+func TestLiveRequestPermission(t *testing.T) {
+	if os.Getenv("UNFRAMEO_ASK_PERMISSION") == "" {
+		t.Skip("set UNFRAMEO_ASK_PERMISSION=1, and stand at the frame, to test asking for permission")
+	}
+	c := connectLive(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	before, err := c.GetInfo(ctx)
+	if err != nil {
+		t.Fatalf("GetInfo: %v", err)
+	}
+	t.Logf("before: may view %t, may manage %t", before.GetHasPermissionViewPhotos(), before.GetHasPermissionManagePhotos())
+	if frameo.Granted(before, frameo.PermissionManage) {
+		t.Skip("this pairing already has every permission; remove it on the frame to test asking")
+	}
+
+	t.Log("asking to manage photos; tap Allow on the frame")
+	if err := c.RequestPermission(ctx, frameo.PermissionManage); err != nil {
+		t.Fatalf("RequestPermission: %v", err)
+	}
+	after, err := c.GetInfo(ctx)
+	if err != nil {
+		t.Fatalf("GetInfo: %v", err)
+	}
+	t.Logf("after: may view %t, may manage %t", after.GetHasPermissionViewPhotos(), after.GetHasPermissionManagePhotos())
 }

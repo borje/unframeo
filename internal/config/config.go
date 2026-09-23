@@ -10,8 +10,10 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"os/user"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/borje/unframeo/internal/sdg"
@@ -20,11 +22,53 @@ import (
 // Config is the on-disk state. The private key is the client's identity: a
 // frame is paired to it, so losing the file means pairing every frame again.
 type Config struct {
-	PrivateKey   string           `json:"private_key"`
+	PrivateKey string `json:"private_key"`
+	// ClientName is what the frame shows as the sender of this client's
+	// photos. Empty, in a file written before the field existed, means the
+	// default; see Name.
+	ClientName   string           `json:"client_name,omitempty"`
 	DefaultFrame string           `json:"default_frame,omitempty"`
 	Frames       map[string]Frame `json:"frames,omitempty"`
 
 	path string
+}
+
+// DefaultClientName is user@host, which says whose machine a photo came from
+// without anyone having to choose a name before the first pairing.
+func DefaultClientName() string {
+	name := os.Getenv("USER")
+	if name == "" {
+		if u, err := user.Current(); err == nil && u.Username != "" {
+			name = u.Username
+		} else {
+			name = "unframeo"
+		}
+	}
+	if host, err := os.Hostname(); err == nil && host != "" {
+		name += "@" + host
+	}
+	return name
+}
+
+// Name is the client name to introduce ourselves with: the saved one, or the
+// default where a configuration predates the field. The default is not
+// written back, since a configuration may be read from places a command has
+// no business writing to.
+func (c *Config) Name() string {
+	if c.ClientName != "" {
+		return c.ClientName
+	}
+	return DefaultClientName()
+}
+
+// SetClientName saves a new client name.
+func (c *Config) SetClientName(name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return errors.New("config: the client name cannot be empty")
+	}
+	c.ClientName = name
+	return c.Save()
 }
 
 // Frame is one paired device.
@@ -122,7 +166,12 @@ func Create(path string) (*Config, *Missing, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	c := &Config{PrivateKey: id.Private.String(), Frames: map[string]Frame{}, path: path}
+	c := &Config{
+		PrivateKey: id.Private.String(),
+		ClientName: DefaultClientName(),
+		Frames:     map[string]Frame{},
+		path:       path,
+	}
 	if err := c.Save(); err != nil {
 		return nil, nil, err
 	}

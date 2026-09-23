@@ -38,9 +38,13 @@ Commands:
   hide <id>...       hide photos without removing them
   show <id>...       show photos that were hidden
   delete <id>...     remove photos from the frame
+  permission view|manage
+                     ask the frame's owner to let this client view, or
+                     manage, its photos
   discover           find frames on the local network
   frames             list paired frames
   forget <name>      forget a paired frame
+  name [<name>]      show, or change, the name the frame knows this client by
   whoami             print this client's own identity
   raw <number>       send an empty message with the given number and report replies
 
@@ -98,6 +102,17 @@ delete removes a photo for good; hide keeps it on the frame and stops it
 being displayed. See internal/frameo/types.go for what is known of the
 protocol, including the one message number still missing.
 
+A frame lets a newly paired client send photos and nothing more. Listing,
+fetching, hiding and deleting need its owner's say-so, which permission asks
+for: the frame shows an Allow prompt on its screen, so someone has to be
+standing at it, and the command waits until they answer or -timeout runs out.
+manage includes view.
+
+The frame shows photos as coming from a name, and asks each client for one
+when it connects. name shows what this client answers -- user@host unless it
+has been changed -- and name <name> changes it, in the configuration file, for
+every frame at once.
+
 The configuration file holds a private key, and that key is this client's
 identity: a frame is paired to it, so it cannot be recreated and a frame
 paired to a lost one has to be paired again at the frame itself. Only pair
@@ -124,6 +139,9 @@ type options struct {
 	configPath    string
 	server        string
 	verbose       bool
+	// anonymous leaves the frame's opening GetInfo unanswered and visible,
+	// for raw, whose probes are read against that baseline.
+	anonymous bool
 }
 
 func main() {
@@ -201,33 +219,53 @@ func run(args []string, stdout io.Writer) error {
 	defer cancel()
 
 	cmd, rest := args[0], args[1:]
+	return hintAtPermission(dispatch(ctx, cfg, &o, cmd, rest))
+}
+
+// hintAtPermission names the command that fixes a refusal for lack of
+// permission, which is otherwise the least self-explanatory failure a new
+// pairing meets: the frame understood perfectly well and said no.
+func hintAtPermission(err error) error {
+	var fe *frameo.FrameError
+	if errors.As(err, &fe) && fe.Code == pb.Error_MISSING_PERMISSION {
+		return fmt.Errorf("%w\n  ask for it with \"unframeo permission view\" or \"unframeo permission manage\", "+
+			"and approve it on the frame", err)
+	}
+	return err
+}
+
+func dispatch(ctx context.Context, cfg *config.Config, o *options, cmd string, rest []string) error {
 	switch cmd {
 	case "pair":
-		return cmdPair(ctx, cfg, &o, rest)
+		return cmdPair(ctx, cfg, o, rest)
 	case "info":
-		return cmdInfo(ctx, cfg, &o)
+		return cmdInfo(ctx, cfg, o)
 	case "send":
-		return cmdSend(ctx, cfg, &o, rest)
+		return cmdSend(ctx, cfg, o, rest)
 	case "list":
-		return cmdList(ctx, cfg, &o)
+		return cmdList(ctx, cfg, o)
 	case "get":
-		return cmdGet(ctx, cfg, &o, rest)
+		return cmdGet(ctx, cfg, o, rest)
 	case "hide":
-		return cmdSetVisible(ctx, cfg, &o, rest, false)
+		return cmdSetVisible(ctx, cfg, o, rest, false)
 	case "show":
-		return cmdSetVisible(ctx, cfg, &o, rest, true)
+		return cmdSetVisible(ctx, cfg, o, rest, true)
 	case "delete":
-		return cmdDelete(ctx, cfg, &o, rest)
+		return cmdDelete(ctx, cfg, o, rest)
+	case "permission":
+		return cmdPermission(ctx, cfg, o, rest)
 	case "discover":
-		return cmdDiscover(ctx, cfg, &o)
+		return cmdDiscover(ctx, cfg, o)
 	case "frames":
-		return cmdFrames(cfg, &o)
+		return cmdFrames(cfg, o)
 	case "forget":
-		return cmdForget(cfg, &o, rest)
+		return cmdForget(cfg, o, rest)
+	case "name":
+		return cmdName(cfg, o, rest)
 	case "whoami":
-		return cmdWhoami(cfg, &o)
+		return cmdWhoami(cfg, o)
 	case "raw":
-		return cmdRaw(ctx, cfg, &o, rest)
+		return cmdRaw(ctx, cfg, o, rest)
 	default:
 		return fmt.Errorf("unknown command %q", cmd)
 	}
@@ -276,8 +314,9 @@ var knownCommands = map[string]bool{
 	"pair": true, "info": true, "send": true, "list": true, "delete": true,
 	"get":  true,
 	"hide": true, "show": true,
-	"discover": true,
-	"frames":   true, "forget": true, "whoami": true, "raw": true,
+	"permission": true,
+	"discover":   true,
+	"frames":     true, "forget": true, "name": true, "whoami": true, "raw": true,
 }
 
 // How to reach a frame. The names are the ones -net takes.
@@ -374,7 +413,7 @@ func connect(ctx context.Context, cfg *config.Config, o *options) (*frameo.Clien
 			if grid != nil {
 				go closeGrid(grid)
 			}
-			return frameo.NewClient(p, o.logger()), &link{name: name, via: "the local network at " + ep.String()}, nil
+			return newClient(p, cfg, o), &link{name: name, via: "the local network at " + ep.String()}, nil
 		case o.network == networkLocal:
 			return nil, nil, fmt.Errorf("frame %q could not be reached on the local network: %w", name, err)
 		default:
@@ -406,7 +445,18 @@ func connect(ctx context.Context, cfg *config.Config, o *options) (*frameo.Clien
 		<-p.Done()
 		_ = g.Close()
 	}()
-	return frameo.NewClient(p, o.logger()), &link{name: name, via: "the relay"}, nil
+	return newClient(p, cfg, o), &link{name: name, via: "the relay"}, nil
+}
+
+// newClient starts the conversation over an open connection, introducing this
+// client by the name the configuration gives it unless o asks it to stay
+// anonymous.
+func newClient(p frameo.Transport, cfg *config.Config, o *options) *frameo.Client {
+	name := cfg.Name()
+	if o.anonymous {
+		name = ""
+	}
+	return frameo.NewClient(p, &frameo.Options{Logger: o.logger(), Name: name})
 }
 
 // tryLocally reports whether to look for the frame on this network. A grid
@@ -570,7 +620,68 @@ func cmdPair(ctx context.Context, cfg *config.Config, o *options, args []string)
 	}
 	fmt.Fprintf(o.out, "Paired with %s.\n", name)
 	fmt.Fprintf(o.out, "Its address is %s, saved in %s.\n", peer, cfg.Path())
+	fmt.Fprintf(o.out, "The frame will show this client as %q; \"unframeo name <name>\" changes that.\n", cfg.Name())
 	return nil
+}
+
+// cmdPermission asks the frame's owner to let this client do more than send.
+func cmdPermission(ctx context.Context, cfg *config.Config, o *options, args []string) error {
+	var p frameo.Permission
+	switch {
+	case len(args) == 1 && args[0] == "view":
+		p = frameo.PermissionView
+	case len(args) == 1 && args[0] == "manage":
+		p = frameo.PermissionManage
+	default:
+		return errors.New("usage: unframeo permission view|manage")
+	}
+
+	c, frame, err := connect(ctx, cfg, o)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+
+	info, err := c.GetInfo(ctx)
+	if err != nil {
+		return err
+	}
+	if frameo.Granted(info, p) {
+		fmt.Fprintf(o.out, "%s already lets this client %s.\n", frame, p)
+		return nil
+	}
+	fmt.Fprintf(o.out, "Asked %s for permission to %s. Approve it on the frame; waiting up to %s.\n",
+		frame, p, o.timeout)
+	if err := c.RequestPermission(ctx, p); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Errorf("nobody approved the request within %s; run it again with someone at the frame, "+
+				"or a longer -timeout", o.timeout)
+		}
+		return err
+	}
+	fmt.Fprintf(o.out, "Granted.\n")
+	return nil
+}
+
+// cmdName shows or changes the name the frame knows this client by.
+func cmdName(cfg *config.Config, o *options, args []string) error {
+	switch len(args) {
+	case 0:
+		if cfg.ClientName == "" {
+			fmt.Fprintf(o.out, "%s (the default; nothing is saved in %s)\n", cfg.Name(), cfg.Path())
+		} else {
+			fmt.Fprintf(o.out, "%s\n", cfg.ClientName)
+		}
+		return nil
+	case 1:
+		if err := cfg.SetClientName(args[0]); err != nil {
+			return err
+		}
+		fmt.Fprintf(o.out, "This client is now %q to every frame, saved in %s.\n", cfg.ClientName, cfg.Path())
+		return nil
+	default:
+		return errors.New("usage: unframeo name [<name>]")
+	}
 }
 
 func cmdInfo(ctx context.Context, cfg *config.Config, o *options) error {
@@ -1076,6 +1187,7 @@ func cmdWhoami(cfg *config.Config, o *options) error {
 		return err
 	}
 	fmt.Fprintf(o.out, "Address  %s\n", id.Public)
+	fmt.Fprintf(o.out, "Name     %s\n", cfg.Name())
 	fmt.Fprintf(o.out, "Config   %s\n", cfg.Path())
 	return nil
 }
@@ -1092,6 +1204,11 @@ func cmdRaw(ctx context.Context, cfg *config.Config, o *options, args []string) 
 		return fmt.Errorf("%q is not a message number", args[0])
 	}
 
+	// A probe is read against what every connection gets anyway, so the
+	// frame's own GetInfo has to stay in view and nothing else may be sent:
+	// an introduction would hide the one and could draw replies credited to
+	// the number under test.
+	o.anonymous = true
 	c, frame, err := connect(ctx, cfg, o)
 	if err != nil {
 		return err

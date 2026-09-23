@@ -1236,6 +1236,52 @@ func (x *ClientInfo) GetProfilePictureId() int64 {
 	return 0
 }
 
+// Asks the frame's owner to grant a permission (type 27): 1 = view photos,
+// 3 = manage photos. Shape read from yasoob/frameo-client, not from the app.
+type RequestPermission struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Permission    int32                  `protobuf:"varint,1,opt,name=permission,proto3" json:"permission,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RequestPermission) Reset() {
+	*x = RequestPermission{}
+	mi := &file_frameo_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RequestPermission) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RequestPermission) ProtoMessage() {}
+
+func (x *RequestPermission) ProtoReflect() protoreflect.Message {
+	mi := &file_frameo_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RequestPermission.ProtoReflect.Descriptor instead.
+func (*RequestPermission) Descriptor() ([]byte, []int) {
+	return file_frameo_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *RequestPermission) GetPermission() int32 {
+	if x != nil {
+		return x.Permission
+	}
+	return 0
+}
+
 type EncryptedData struct {
 	state            protoimpl.MessageState `protogen:"open.v1"`
 	Nonce            []byte                 `protobuf:"bytes,1,opt,name=nonce,proto3" json:"nonce,omitempty"`
@@ -1246,7 +1292,7 @@ type EncryptedData struct {
 
 func (x *EncryptedData) Reset() {
 	*x = EncryptedData{}
-	mi := &file_frameo_proto_msgTypes[15]
+	mi := &file_frameo_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1258,7 +1304,7 @@ func (x *EncryptedData) String() string {
 func (*EncryptedData) ProtoMessage() {}
 
 func (x *EncryptedData) ProtoReflect() protoreflect.Message {
-	mi := &file_frameo_proto_msgTypes[15]
+	mi := &file_frameo_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1271,7 +1317,7 @@ func (x *EncryptedData) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EncryptedData.ProtoReflect.Descriptor instead.
 func (*EncryptedData) Descriptor() ([]byte, []int) {
-	return file_frameo_proto_rawDescGZIP(), []int{15}
+	return file_frameo_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *EncryptedData) GetNonce() []byte {
@@ -1298,7 +1344,7 @@ type PairingCode struct {
 
 func (x *PairingCode) Reset() {
 	*x = PairingCode{}
-	mi := &file_frameo_proto_msgTypes[16]
+	mi := &file_frameo_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1310,7 +1356,7 @@ func (x *PairingCode) String() string {
 func (*PairingCode) ProtoMessage() {}
 
 func (x *PairingCode) ProtoReflect() protoreflect.Message {
-	mi := &file_frameo_proto_msgTypes[16]
+	mi := &file_frameo_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1323,7 +1369,7 @@ func (x *PairingCode) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PairingCode.ProtoReflect.Descriptor instead.
 func (*PairingCode) Descriptor() ([]byte, []int) {
-	return file_frameo_proto_rawDescGZIP(), []int{16}
+	return file_frameo_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *PairingCode) GetPairingCode() string {
@@ -1450,7 +1496,11 @@ const file_frameo_proto_rawDesc = "" +
 	"ClientInfo\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12&\n" +
 	"\x0fuser_account_id\x18\x02 \x01(\tR\ruserAccountId\x12,\n" +
-	"\x12profile_picture_id\x18\x03 \x01(\x12R\x10profilePictureId\"R\n" +
+	"\x12profile_picture_id\x18\x03 \x01(\x12R\x10profilePictureId\"3\n" +
+	"\x11RequestPermission\x12\x1e\n" +
+	"\n" +
+	"permission\x18\x01 \x01(\x05R\n" +
+	"permission\"R\n" +
 	"\rEncryptedData\x12\x14\n" +
 	"\x05nonce\x18\x01 \x01(\fR\x05nonce\x12+\n" +
 	"\x11encrypted_message\x18\x02 \x01(\tR\x10encryptedMessage\"B\n" +
@@ -1471,7 +1521,7 @@ func file_frameo_proto_rawDescGZIP() []byte {
 }
 
 var file_frameo_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_frameo_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
+var file_frameo_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
 var file_frameo_proto_goTypes = []any{
 	(Media_Type)(0),                // 0: frameo.Media.Type
 	(Media_ScaleType)(0),           // 1: frameo.Media.ScaleType
@@ -1492,8 +1542,9 @@ var file_frameo_proto_goTypes = []any{
 	(*FrameCapabilities)(nil),      // 16: frameo.FrameCapabilities
 	(*AsyncInformation)(nil),       // 17: frameo.AsyncInformation
 	(*ClientInfo)(nil),             // 18: frameo.ClientInfo
-	(*EncryptedData)(nil),          // 19: frameo.EncryptedData
-	(*PairingCode)(nil),            // 20: frameo.PairingCode
+	(*RequestPermission)(nil),      // 19: frameo.RequestPermission
+	(*EncryptedData)(nil),          // 20: frameo.EncryptedData
+	(*PairingCode)(nil),            // 21: frameo.PairingCode
 }
 var file_frameo_proto_depIdxs = []int32{
 	0,  // 0: frameo.Media.type:type_name -> frameo.Media.Type
@@ -1524,7 +1575,7 @@ func file_frameo_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_frameo_proto_rawDesc), len(file_frameo_proto_rawDesc)),
 			NumEnums:      4,
-			NumMessages:   17,
+			NumMessages:   18,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

@@ -4,6 +4,12 @@
 // SecureDeviceGrid connection.
 package frameo
 
+import (
+	"fmt"
+
+	"github.com/borje/unframeo/internal/frameo/pb"
+)
+
 // Every message is framed as two big-endian 32-bit integers followed by a
 // protobuf: a constant, then the type that says which protobuf it is.
 const (
@@ -76,7 +82,62 @@ const (
 	// copies of a photo and the bound only chooses between them, at a boundary
 	// measured at exactly 500. Size records what that cost to find out.
 	TypeGetMedia = 23
+
+	// TypeClientInfo tells the frame who is calling: ClientInfo{Name}. The
+	// frame asks first -- every connection begins with a GetInfo(1) from the
+	// frame's side, the baseline chatter the probes below had to subtract --
+	// and this is the answer, which is where the frame gets the sender's name
+	// it shows beside a photo. The number and the exchange are read from
+	// yasoob/frameo-client, which replies to an inbound 1 with a 3 carrying
+	// field 1 as a string; not yet confirmed against a real frame by watching
+	// the name appear on it.
+	TypeClientInfo = 3
+
+	// TypeRequestPermission asks the frame's owner to grant this client a
+	// permission: RequestPermission{Permission}, where 1 asks to view photos
+	// and 3 to manage them. The frame shows an Allow prompt and answers
+	// nothing over the wire; the grant shows up in the next FrameInfo's
+	// permission flags, so a client polls GetInfo until it does. Also read
+	// from yasoob/frameo-client, which treats 3 as covering view as well: its
+	// manage check waits for both flags. Not yet confirmed against a real
+	// frame.
+	TypeRequestPermission = 27
 )
+
+// Permission is something the frame's owner can grant a client.
+type Permission int32
+
+const (
+	// PermissionView allows listing and fetching photos.
+	PermissionView Permission = 1
+	// PermissionManage allows hiding, showing and deleting photos, and
+	// implies PermissionView.
+	PermissionManage Permission = 3
+)
+
+func (p Permission) String() string {
+	switch p {
+	case PermissionView:
+		return "view photos"
+	case PermissionManage:
+		return "manage photos"
+	default:
+		return fmt.Sprintf("permission %d", int32(p))
+	}
+}
+
+// Granted reports whether info shows p as held. Manage counts only when view
+// is held as well, since one is no use without the other.
+func Granted(info *pb.FrameInfo, p Permission) bool {
+	switch p {
+	case PermissionView:
+		return info.GetHasPermissionViewPhotos()
+	case PermissionManage:
+		return info.GetHasPermissionViewPhotos() && info.GetHasPermissionManagePhotos()
+	default:
+		return false
+	}
+}
 
 // Candidates seen but not yet confirmed the way TypeGetAllMediaMetaData was:
 // each drew a distinguishable, real reply from the frame rather than being
@@ -169,6 +230,10 @@ func typeName(t int32) string {
 		return "GetInfo"
 	case TypeFrameInfo:
 		return "FrameInfo"
+	case TypeClientInfo:
+		return "ClientInfo"
+	case TypeRequestPermission:
+		return "RequestPermission"
 	case TypeMedia:
 		return "Media"
 	case TypeMediaDataSegment:

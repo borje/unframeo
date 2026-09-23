@@ -20,9 +20,14 @@ can be fed from a script or a server instead of from the phone app.
     hide <id>...         hide photos without removing them
     show <id>...         show photos that were hidden
     delete <id>...       remove photos from the frame
+    permission view|manage
+                         ask the frame's owner to let this client view, or
+                         manage, its photos
     discover             find frames on the local network
     frames               list the frames already paired
     forget <name>        forget a paired frame
+    name [<name>]        show, or change, the name the frame knows this
+                         client by
     whoami               print this client's own identity
     raw <number>         send an empty message with that number, report replies
     help                 print the full usage, which says more than this does
@@ -34,6 +39,16 @@ nothing. `get` writes `<date>_<time>_<id>.<extension>` in the current
 directory, so a directory of them sorts into the order the photos were taken,
 and keeps going past a photo it cannot fetch. `delete` is final; `hide` only
 stops a photo being displayed.
+
+A newly paired client may send photos and nothing more. `list`, `get`, `hide`,
+`show` and `delete` need the owner's say-so, which `permission` asks for: the
+frame shows an Allow prompt on its screen, so someone has to be standing at it,
+and the command waits until they answer or `-timeout` runs out. `manage`
+includes `view`. A command refused for want of permission says to run it.
+
+The frame shows photos as coming from a name, and asks each client for one
+when it connects. `pair` saves `user@host` as this client's; `name` shows it and
+`name <name>` changes it, for every frame at once.
 
 ## Options
 
@@ -74,6 +89,9 @@ One file, `unframeo/config.json` under the user config directory --
 `-config` points instead. It is written for its owner alone, through a
 temporary file so an interrupted write cannot leave an unusable identity
 behind.
+
+It also holds the client name, which is only a label and can be changed at
+will with `name`.
 
 It holds a private key, and that key is not a credential that can be reissued:
 it *is* this client's identity. The public half is the address the frame knows,
@@ -174,6 +192,8 @@ They use the configuration this client already has, so they need a frame paired
 first and powered on; with nothing paired they skip rather than fail. Set
 `UNFRAMEO_FRAME` to choose between several paired frames, and `UNFRAMEO_PHOTO` to a
 file to run the tests that actually send one -- they skip without it, since a
-test that sends leaves a photo on a real frame. The `internal/sdg` and
+test that sends leaves a photo on a real frame. `UNFRAMEO_ASK_PERMISSION=1` runs
+the test that asks the frame for permission, which needs someone at the frame
+to tap Allow. The `internal/sdg` and
 `internal/mdns` live tests reach Frameo's own grid servers and the local
 network respectively.

@@ -47,6 +47,25 @@ type Frame struct {
 	// VisibilityType is the message number this frame accepts visibility
 	// changes on. Configurable for the same reason as ListType.
 	VisibilityType int32
+	// ListError makes every listing answer with this code instead of the
+	// library, which is how a frame refuses a client it has not been told to
+	// trust.
+	ListError pb.Error_Code
+	// PermissionType is the message number this frame accepts permission
+	// requests on. Configurable for the same reason as ListType.
+	PermissionType int32
+	// GrantOnRequest makes a permission request succeed: the frame's owner
+	// taps Allow at once, and Info reports the permission from then on. Unset,
+	// the request is recorded and nothing changes, as when nobody is at the
+	// frame.
+	GrantOnRequest bool
+	// DeclineOnRequest makes the owner tap Deny instead. What a real frame
+	// sends then is not known; this one answers with an AcknowledgeReceipt
+	// carrying the DECLINED code, the refusal the client is built to catch.
+	DeclineOnRequest bool
+	// AsksWhoIsCalling makes the frame open the conversation with a GetInfo
+	// of its own, as a real frame does, so the client's answer can be seen.
+	AsksWhoIsCalling bool
 	// Library is what a listing reports.
 	Library []*pb.MediaMetaData
 
@@ -108,6 +127,10 @@ type Frame struct {
 	unknown  []int32
 	segments int
 	requests []*pb.GetMedia
+	// names is what the client called itself, once per introduction.
+	names []string
+	// permissions is what the client asked to be allowed, in order.
+	permissions []int32
 	// stalled is what an abandoned transfer still owes; stalledHeader and
 	// stalledStream are the header it announced and the whole reply it would
 	// have sent. The last two are kept rather than looked up again because the
@@ -211,8 +234,28 @@ func (f *Frame) UnknownTypes() []int32 {
 	return append([]int32(nil), f.unknown...)
 }
 
+// ClientNames lists the names the client introduced itself with.
+func (f *Frame) ClientNames() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.names...)
+}
+
+// PermissionRequests lists the permissions the client asked for, as the
+// numbers it sent.
+func (f *Frame) PermissionRequests() []int32 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]int32(nil), f.permissions...)
+}
+
 // Serve runs the frame until the connection ends.
 func (f *Frame) Serve(rw MessageRW) error {
+	if f.AsksWhoIsCalling {
+		if err := send(rw, 1, &pb.GetInfo{}); err != nil {
+			return err
+		}
+	}
 	for {
 		msg, err := rw.Recv()
 		if err != nil {
@@ -241,10 +284,38 @@ func (f *Frame) handle(rw MessageRW, msg []byte) error {
 	}
 
 	if f.ListType != 0 && msgType == f.ListType {
+		if f.ListError != pb.Error_NONE {
+			return send(rw, 32, &pb.AllMediaMetaData{Error: &pb.Error{Code: f.ListError}})
+		}
 		f.mu.Lock()
 		items := append([]*pb.MediaMetaData(nil), f.Library...)
 		f.mu.Unlock()
 		return send(rw, 32, &pb.AllMediaMetaData{MediaMetaDataItems: items})
+	}
+	if f.PermissionType != 0 && msgType == f.PermissionType {
+		var req pb.RequestPermission
+		if err := proto.Unmarshal(payload, &req); err != nil {
+			return fmt.Errorf("frameotest: malformed permission request: %w", err)
+		}
+		f.mu.Lock()
+		f.permissions = append(f.permissions, req.GetPermission())
+		if f.GrantOnRequest {
+			// The owner taps Allow. A real frame says nothing over the
+			// wire; the client sees the change in its next FrameInfo.
+			switch req.GetPermission() {
+			case 1:
+				f.Info.HasPermissionViewPhotos = true
+			case 3:
+				f.Info.HasPermissionViewPhotos = true
+				f.Info.HasPermissionManagePhotos = true
+			}
+		}
+		decline := f.DeclineOnRequest
+		f.mu.Unlock()
+		if decline {
+			return send(rw, 6, &pb.AcknowledgeReceipt{Error: &pb.Error{Code: pb.Error_DECLINED}})
+		}
+		return nil
 	}
 	if f.DeleteType != 0 && msgType == f.DeleteType {
 		var req pb.DeleteMedia
@@ -293,7 +364,20 @@ func (f *Frame) handle(rw MessageRW, msg []byte) error {
 
 	switch msgType {
 	case 1: // GetInfo
-		return send(rw, 2, f.Info)
+		f.mu.Lock()
+		info := proto.Clone(f.Info).(*pb.FrameInfo)
+		f.mu.Unlock()
+		return send(rw, 2, info)
+
+	case 3: // ClientInfo: the client saying who it is
+		var who pb.ClientInfo
+		if err := proto.Unmarshal(payload, &who); err != nil {
+			return fmt.Errorf("frameotest: malformed client introduction: %w", err)
+		}
+		f.mu.Lock()
+		f.names = append(f.names, who.GetName())
+		f.mu.Unlock()
+		return nil
 
 	case 4: // Media
 		var media pb.Media

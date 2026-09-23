@@ -108,7 +108,7 @@ func connector(t *testing.T) (opener, string, *slog.Logger) {
 				if err != nil {
 					return nil, err
 				}
-				return frameo.NewClient(p, log), nil
+				return frameo.NewClient(p, &frameo.Options{Logger: log, Name: "unframeo live test"}), nil
 			}, "the local network", log
 		}
 		t.Logf("%s did not answer mDNS; going through the relay", name)
@@ -129,7 +129,7 @@ func connector(t *testing.T) (opener, string, *slog.Logger) {
 		if err != nil {
 			return nil, err
 		}
-		return frameo.NewClient(p, log), nil
+		return frameo.NewClient(p, &frameo.Options{Logger: log, Name: "unframeo live test"}), nil
 	}, "the relay", log
 }
 

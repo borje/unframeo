@@ -25,6 +25,12 @@ import (
 // fake grid, so every layer under test is the one that ships.
 func setup(t *testing.T, frame *frameotest.Frame) *frameo.Client {
 	t.Helper()
+	return setupWith(t, frame, nil)
+}
+
+// setupWith is setup for a client that needs options, such as a name.
+func setupWith(t *testing.T, frame *frameotest.Frame, opts *frameo.Options) *frameo.Client {
+	t.Helper()
 
 	grid, err := sdgtest.NewGrid()
 	if err != nil {
@@ -71,7 +77,7 @@ func setup(t *testing.T, frame *frameotest.Frame) *frameo.Client {
 		t.Fatalf("Connect: %v", err)
 	}
 
-	c := frameo.NewClient(p, nil)
+	c := frameo.NewClient(p, opts)
 	t.Cleanup(func() { _ = c.Close() })
 	return c
 }
@@ -989,6 +995,146 @@ func TestGetMediaRefusesADestructiveMessageNumber(t *testing.T) {
 		}
 		if got := frame.Served(); len(got) != 0 {
 			t.Errorf("Fetch.Type = %d reached the frame at all: %v", msgType, got)
+		}
+	}
+}
+
+// A real frame opens every connection by asking who is calling, and the name
+// it gets is what it shows beside the photos. The answer goes out on its own
+// goroutine, so the test waits for the frame to hear it.
+func TestClientAnswersWhoIsCallingWithItsName(t *testing.T) {
+	frame := frameotest.New()
+	frame.AsksWhoIsCalling = true
+	c := setupWith(t, frame, &frameo.Options{Name: "bege@box"})
+
+	if _, err := c.GetInfo(testCtx(t)); err != nil {
+		t.Fatalf("GetInfo: %v", err)
+	}
+	waitFor(t, "the introduction", func() bool { return len(frame.ClientNames()) > 0 })
+	if got := frame.ClientNames(); len(got) != 1 || got[0] != "bege@box" {
+		t.Errorf("frame heard %q, want [bege@box]", got)
+	}
+	if got := frame.UnknownTypes(); len(got) != 0 {
+		t.Errorf("frame saw unknown message numbers %v", got)
+	}
+}
+
+// Without a name there is nothing to say, and the frame's question must not
+// be mistaken by a caller for a reply.
+func TestClientWithoutANameStaysSilent(t *testing.T) {
+	frame := frameotest.New()
+	frame.AsksWhoIsCalling = true
+	c := setup(t, frame)
+
+	info, err := c.GetInfo(testCtx(t))
+	if err != nil {
+		t.Fatalf("GetInfo: %v", err)
+	}
+	if info.GetName() != "Test Frame" {
+		t.Errorf("GetInfo returned %q, want the frame's own description", info.GetName())
+	}
+	if got := frame.ClientNames(); len(got) != 0 {
+		t.Errorf("frame heard %q, want nothing", got)
+	}
+}
+
+// A client with no name passes the frame's question on, which is what raw's
+// probes are read against.
+func TestClientWithoutANameShowsTheFramesQuestion(t *testing.T) {
+	frame := frameotest.New()
+	frame.AsksWhoIsCalling = true
+	c := setup(t, frame)
+
+	select {
+	case f := <-c.Frames():
+		if f.Type != frameo.TypeGetInfo {
+			t.Errorf("first message is type %d, want the frame's GetInfo", f.Type)
+		}
+	case <-testCtx(t).Done():
+		t.Fatal("the frame's GetInfo never reached the caller")
+	}
+}
+
+func TestRequestPermissionReturnsAtOnceWhenAlreadyGranted(t *testing.T) {
+	frame := frameotest.New() // grants both by default
+	frame.PermissionType = frameo.TypeRequestPermission
+	c := setup(t, frame)
+
+	if err := c.RequestPermission(testCtx(t), frameo.PermissionManage); err != nil {
+		t.Fatalf("RequestPermission: %v", err)
+	}
+	if got := frame.PermissionRequests(); len(got) != 0 {
+		t.Errorf("the client asked for %v although it already had the permission", got)
+	}
+}
+
+func TestRequestPermissionWaitsForApproval(t *testing.T) {
+	frame := frameotest.New()
+	frame.Info.HasPermissionViewPhotos = false
+	frame.Info.HasPermissionManagePhotos = false
+	frame.PermissionType = frameo.TypeRequestPermission
+	frame.GrantOnRequest = true
+	c := setup(t, frame)
+
+	if err := c.RequestPermission(testCtx(t), frameo.PermissionManage); err != nil {
+		t.Fatalf("RequestPermission: %v", err)
+	}
+	if got := frame.PermissionRequests(); len(got) != 1 || got[0] != 3 {
+		t.Errorf("frame saw permission requests %v, want [3]", got)
+	}
+	info, err := c.GetInfo(testCtx(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !frameo.Granted(info, frameo.PermissionManage) {
+		t.Error("the frame does not report the permission as granted")
+	}
+}
+
+// Nobody at the frame means the request stands unanswered for as long as the
+// caller cares to wait, and no longer.
+func TestRequestPermissionGivesUp(t *testing.T) {
+	frame := frameotest.New()
+	frame.Info.HasPermissionViewPhotos = false
+	frame.PermissionType = frameo.TypeRequestPermission
+	c := setup(t, frame)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := c.RequestPermission(ctx, frameo.PermissionView)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want the deadline", err)
+	}
+	if got := frame.PermissionRequests(); len(got) != 1 || got[0] != 1 {
+		t.Errorf("frame saw permission requests %v, want [1]", got)
+	}
+}
+
+// An owner who taps Deny has answered, and the client must say so rather
+// than wait out its deadline.
+func TestRequestPermissionReportsARefusal(t *testing.T) {
+	frame := frameotest.New()
+	frame.Info.HasPermissionViewPhotos = false
+	frame.PermissionType = frameo.TypeRequestPermission
+	frame.DeclineOnRequest = true
+	c := setup(t, frame)
+
+	err := c.RequestPermission(testCtx(t), frameo.PermissionView)
+	var fe *frameo.FrameError
+	if !errors.As(err, &fe) || fe.Code != pb.Error_DECLINED {
+		t.Fatalf("err = %v, want the frame's refusal", err)
+	}
+}
+
+// waitFor polls until cond holds, for a message that has no reply to wait on.
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for !cond() {
+		select {
+		case <-deadline:
+			t.Fatalf("%s never arrived at the frame", what)
+		case <-time.After(10 * time.Millisecond):
 		}
 	}
 }

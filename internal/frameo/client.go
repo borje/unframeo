@@ -34,9 +34,10 @@ type Transport interface {
 
 // Client talks to one frame.
 type Client struct {
-	t   Transport
-	log *slog.Logger
-	r   *reassembler
+	t    Transport
+	log  *slog.Logger
+	name string
+	r    *reassembler
 
 	frames chan Frame
 	nextID atomic.Int64
@@ -45,17 +46,38 @@ type Client struct {
 	err       error
 	done      chan struct{}
 	closeOnce sync.Once
+	// intro counts introductions still being sent, so Close can let one
+	// finish rather than cut it off: a short command would otherwise close
+	// the connection before the frame had heard the name.
+	intro sync.WaitGroup
+}
+
+// Options configures a Client. The zero value is usable.
+type Options struct {
+	// Logger receives the protocol exchange at debug level. Nil discards it.
+	Logger *slog.Logger
+	// Name is what the frame shows as the sender of this client's photos. It
+	// is given in answer to the frame's own GetInfo, which opens every
+	// connection; empty leaves that question unanswered, as earlier versions
+	// did.
+	Name string
 }
 
 // NewClient starts talking to a frame over an established connection. It takes
-// ownership of the connection: closing the client closes it.
-func NewClient(t Transport, log *slog.Logger) *Client {
+// ownership of the connection: closing the client closes it. A nil o means
+// the defaults.
+func NewClient(t Transport, o *Options) *Client {
+	if o == nil {
+		o = &Options{}
+	}
+	log := o.Logger
 	if log == nil {
 		log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 	c := &Client{
 		t:      t,
 		log:    log,
+		name:   o.Name,
 		r:      newReassembler(64 << 20),
 		frames: make(chan Frame, 16),
 		done:   make(chan struct{}),
@@ -67,6 +89,7 @@ func NewClient(t Transport, log *slog.Logger) *Client {
 
 // Close ends the conversation and the underlying connection.
 func (c *Client) Close() error {
+	c.intro.Wait()
 	c.shutdown(nil)
 	return c.t.Close()
 }
@@ -123,11 +146,36 @@ func (c *Client) readLoop() {
 			}
 		}
 		c.log.Debug("received", "message", f.String())
+		if f.Type == TypeGetInfo && c.name != "" {
+			// The frame asking who is calling. It is a question, not a reply
+			// anyone is waiting for, so it is answered here and goes no
+			// further. A client with no name to give passes it on like any
+			// other message, as earlier versions did. It is answered from its own goroutine: a send can wait
+			// behind a busy upload for as long as the window stays full, and
+			// the read loop has to keep draining replies meanwhile or it
+			// stalls the very transfer it is waiting behind.
+			c.intro.Add(1)
+			go func() {
+				defer c.intro.Done()
+				c.introduce()
+			}()
+			continue
+		}
 		select {
 		case c.frames <- f:
 		case <-c.done:
 			return
 		}
+	}
+}
+
+// introduce answers the frame's GetInfo with this client's name. A failure is
+// logged and otherwise ignored: the introduction is a courtesy, and a
+// connection that cannot carry it will fail the command in progress on its
+// own account.
+func (c *Client) introduce() {
+	if err := c.send(context.Background(), TypeClientInfo, &pb.ClientInfo{Name: c.name}); err != nil {
+		c.log.Debug("could not introduce this client", "err", err)
 	}
 }
 
@@ -192,4 +240,83 @@ func (c *Client) GetInfo(ctx context.Context) (*pb.FrameInfo, error) {
 		return nil, fmt.Errorf("frameo: malformed frame information: %w", err)
 	}
 	return &info, nil
+}
+
+// permissionPoll is how often RequestPermission asks the frame whether the
+// owner has answered yet. The frame sends nothing when they do; the change is
+// visible only in FrameInfo.
+const permissionPoll = 2 * time.Second
+
+// RequestPermission asks the frame's owner to grant p, and waits until they
+// do, they refuse, or ctx ends. The frame shows a prompt on its screen, so
+// someone has to be standing at it; the wait is bounded only by ctx. A refusal
+// is a *FrameError. A permission already held is reported as granted without
+// asking.
+func (c *Client) RequestPermission(ctx context.Context, p Permission) error {
+	granted, err := c.pollPermission(ctx, p)
+	if err != nil || granted {
+		return err
+	}
+	if err := c.send(ctx, TypeRequestPermission, &pb.RequestPermission{Permission: int32(p)}); err != nil {
+		return err
+	}
+	for {
+		select {
+		case <-time.After(permissionPoll):
+		case <-ctx.Done():
+			return fmt.Errorf("frameo: waiting for permission to %s: %w", p, ctx.Err())
+		}
+		granted, err := c.pollPermission(ctx, p)
+		if err != nil || granted {
+			return err
+		}
+	}
+}
+
+// pollPermission asks the frame for its FrameInfo and reports whether it
+// shows p as held. A refusal arriving meanwhile ends the wait instead.
+//
+// What a refusal looks like on the wire is not known: a frame whose owner taps
+// Allow says nothing and changes FrameInfo, and nobody has yet watched one
+// whose owner taps Deny. Rather than wait out ctx on a request that has
+// already been answered, any reply carrying an Error in the place
+// AcknowledgeReceipt keeps it -- the shape most refusals in this protocol
+// take -- is taken as the answer, whether it comes typed as an
+// AcknowledgeReceipt or as the number after the request's own.
+func (c *Client) pollPermission(ctx context.Context, p Permission) (bool, error) {
+	if err := c.send(ctx, TypeGetInfo, &pb.GetInfo{}); err != nil {
+		return false, err
+	}
+	var refused error
+	f, err := c.await(ctx, "frame information", func(f Frame) bool {
+		if f.Type == TypeFrameInfo {
+			return true
+		}
+		refused = permissionRefusal(f, p)
+		return refused != nil
+	})
+	if err != nil {
+		return false, err
+	}
+	if refused != nil {
+		return false, refused
+	}
+	var info pb.FrameInfo
+	if err := proto.Unmarshal(f.Payload, &info); err != nil {
+		return false, fmt.Errorf("frameo: malformed frame information: %w", err)
+	}
+	return Granted(&info, p), nil
+}
+
+// permissionRefusal reads f as a refusal of a request for p, or returns nil
+// when it is not one.
+func permissionRefusal(f Frame, p Permission) error {
+	if f.Type != TypeAcknowledgeReceipt && f.Type != TypeRequestPermission+1 {
+		return nil
+	}
+	var ack pb.AcknowledgeReceipt
+	if err := proto.Unmarshal(f.Payload, &ack); err != nil {
+		return nil
+	}
+	return frameError("the request to "+p.String(), ack.GetError())
 }
