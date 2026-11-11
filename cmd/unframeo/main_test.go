@@ -1057,3 +1057,74 @@ func TestRefusalHintsAtThePermissionCommand(t *testing.T) {
 		t.Errorf("err = %v, want the frame's refusal still recognisable underneath the hint", err)
 	}
 }
+
+func TestSendSetsScaleAndFocus(t *testing.T) {
+	withConfig(t)
+	frame := frameotest.New()
+	server, code := startFakeFrame(t, frame)
+	if _, err := runCLI(t, "-server", server, "pair", code); err != nil {
+		t.Fatalf("pair: %v", err)
+	}
+	photo := filepath.Join(t.TempDir(), "left.jpg")
+	if err := os.WriteFile(photo, bytes.Repeat([]byte{0x42}, 4000), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		args   []string
+		scale  int32
+		cx, cy float32
+	}{
+		{nil, 2, 0.5, 0.5},
+		{[]string{"-focus", "0.2,0.75"}, 2, 0.2, 0.75},
+		{[]string{"-scale", "fill", "-focus", "1,0"}, 2, 1, 0},
+		{[]string{"-scale", "fit"}, 1, 0.5, 0.5},
+		{[]string{"-fit", "-scale", "fit"}, 1, 0.5, 0.5},
+		{[]string{"-scale", "none"}, 0, 0.5, 0.5},
+	} {
+		before := len(frame.Photos())
+		args := append(append([]string{"-server", server}, tc.args...), "send", photo)
+		if _, err := runCLI(t, args...); err != nil {
+			t.Fatalf("%v: %v", tc.args, err)
+		}
+		photos := frame.Photos()
+		if len(photos) != before+1 {
+			t.Fatalf("%v: the frame holds %d photos, want %d", tc.args, len(photos), before+1)
+		}
+		m := photos[len(photos)-1].Media
+		if int32(m.GetScaleType()) != tc.scale {
+			t.Errorf("%v: scale type = %d, want %d", tc.args, m.GetScaleType(), tc.scale)
+		}
+		if m.GetCenterPointX() != tc.cx || m.GetCenterPointY() != tc.cy {
+			t.Errorf("%v: focus = %v,%v, want %v,%v", tc.args, m.GetCenterPointX(), m.GetCenterPointY(), tc.cx, tc.cy)
+		}
+	}
+}
+
+func TestScaleAndFocusFlagsAreChecked(t *testing.T) {
+	withConfig(t)
+	for _, tc := range []struct {
+		args []string
+		flag string
+	}{
+		{[]string{"-scale", "stretch"}, "-scale"},
+		{[]string{"-scale", "Fill"}, "-scale"},
+		{[]string{"-fit", "-scale", "fill"}, "-fit"},
+		{[]string{"-fit", "-scale", "none"}, "-fit"},
+		{[]string{"-focus", "0.5"}, "-focus"},
+		{[]string{"-focus", "a,b"}, "-focus"},
+		{[]string{"-focus", "1.5,0.5"}, "-focus"},
+		{[]string{"-focus", "0.5,-0.1"}, "-focus"},
+		{[]string{"-focus", "NaN,0.5"}, "-focus"},
+		{[]string{"-focus", "0.5,0.5,0.5"}, "-focus"},
+	} {
+		_, err := runCLI(t, append(tc.args, "info")...)
+		if err == nil || !strings.Contains(err.Error(), tc.flag) {
+			t.Errorf("%v: err = %v, want it to name %s", tc.args, err, tc.flag)
+		}
+	}
+	for _, good := range [][]string{{"-scale", "fill"}, {"-scale", "fit"}, {"-scale", "none"}, {"-focus", "0,1"}, {"-focus", "0.25, 0.75"}} {
+		if _, err := runCLI(t, good...); err == nil || strings.Contains(err.Error(), good[0]) {
+			t.Errorf("%v was rejected: %v", good, err)
+		}
+	}
+}

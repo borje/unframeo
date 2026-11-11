@@ -33,6 +33,9 @@ type Photo struct {
 	// Fit selects scaling: false crops to fill the screen around the centre
 	// point, true fits the whole photo inside it.
 	Fit bool
+	// Scale chooses how the frame fits the photo to its screen, and when it
+	// is set it overrides Fit. ScaleDefault leaves the choice to Fit.
+	Scale Scale
 	// Center places the crop focus as x and y from 0 to 1. Nil means the
 	// middle of the photo, which is different from {0, 0}: that is its
 	// top-left corner.
@@ -42,6 +45,22 @@ type Photo struct {
 	// exists to try the other shape against a frame that rejects them.
 	SingleSegment bool
 }
+
+// Scale is how the frame fits a photo to its screen, one of the three scale
+// types the Media header carries.
+type Scale int
+
+const (
+	// ScaleDefault defers to Photo.Fit: fill unless Fit is set.
+	ScaleDefault Scale = iota
+	// ScaleFill crops the photo to fill the screen around the focus point.
+	ScaleFill
+	// ScaleFit shows the whole photo inside the screen.
+	ScaleFit
+	// ScaleNone sends the protocol's NONE and leaves scaling to the frame.
+	// What a frame does with it has not been observed.
+	ScaleNone
+)
 
 // SendPhoto transfers one photo and waits for the frame to confirm it.
 //
@@ -74,10 +93,25 @@ func (c *Client) SendPhoto(ctx context.Context, p Photo) (int64, error) {
 	cx, cy := float32(0.5), float32(0.5)
 	if p.Center != nil {
 		cx, cy = p.Center[0], p.Center[1]
+		// A NaN fails both comparisons, so it is refused along with the rest.
+		if !(cx >= 0 && cx <= 1 && cy >= 0 && cy <= 1) {
+			return 0, fmt.Errorf("frameo: focus point %v,%v is outside 0 to 1", cx, cy)
+		}
 	}
 	scale := pb.Media_CENTER_POINT_CROP
 	if p.Fit {
 		scale = pb.Media_FIT_INSIDE
+	}
+	switch p.Scale {
+	case ScaleDefault:
+	case ScaleFill:
+		scale = pb.Media_CENTER_POINT_CROP
+	case ScaleFit:
+		scale = pb.Media_FIT_INSIDE
+	case ScaleNone:
+		scale = pb.Media_NONE
+	default:
+		return 0, fmt.Errorf("frameo: unknown scale %d", p.Scale)
 	}
 
 	id := c.newID()
