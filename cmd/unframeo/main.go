@@ -62,6 +62,12 @@ Options:
                      (default full)
   -wait <dur>        how long get waits for one photo before asking again (default 6s)
   -fit               fit the whole photo on screen instead of cropping to fill
+                     (the same as -scale fit)
+  -scale <how>       how the frame fits each photo: fill (crop to fill the
+                     screen around the focus point), fit (show it whole) or
+                     none (leave it to the frame) (default fill)
+  -focus <x,y>       the point a fill crop keeps in view, each from 0 to 1:
+                     0,0 is the top left, 1,1 the bottom right (default 0.5,0.5)
   -single-segment    send each photo as one message instead of a series
   -timeout <dur>     give up after this long, covering the whole run (default 15m)
   -config <path>     configuration file (default: $UNFRAMEO_CONFIG, or
@@ -132,6 +138,10 @@ type options struct {
 	size          photoSize
 	wait          time.Duration
 	fit           bool
+	scaleFlag     string
+	scale         frameo.Scale
+	focusFlag     string
+	focus         *[2]float32
 	singleSegment bool
 	timeout       time.Duration
 	network       string
@@ -162,6 +172,8 @@ func run(args []string, stdout io.Writer) error {
 	fs.StringVar(&o.sizeFlag, "size", "", "which stored copy get asks for")
 	fs.DurationVar(&o.wait, "wait", 0, "how long get waits for one photo before asking again")
 	fs.BoolVar(&o.fit, "fit", false, "fit the whole photo on screen")
+	fs.StringVar(&o.scaleFlag, "scale", "", "fill, fit or none")
+	fs.StringVar(&o.focusFlag, "focus", "", "focus point x,y from 0 to 1")
 	fs.BoolVar(&o.singleSegment, "single-segment", false, "send each photo as one message")
 	fs.DurationVar(&o.timeout, "timeout", 15*time.Minute, "give up after this long")
 	fs.StringVar(&o.network, "net", networkAuto, "local, relay or auto")
@@ -186,6 +198,12 @@ func run(args []string, stdout io.Writer) error {
 	}
 	var err error
 	if o.size, err = parseSize(o.sizeFlag); err != nil {
+		return err
+	}
+	if o.scale, err = parseScale(o.scaleFlag, o.fit); err != nil {
+		return err
+	}
+	if o.focus, err = parseFocus(o.focusFlag); err != nil {
 		return err
 	}
 
@@ -736,6 +754,8 @@ func cmdSend(ctx context.Context, cfg *config.Config, o *options, args []string)
 			Taken:         s.taken,
 			Caption:       o.caption,
 			Fit:           o.fit,
+			Scale:         o.scale,
+			Center:        o.focus,
 			SingleSegment: o.singleSegment,
 		})
 		if err != nil {
@@ -1117,6 +1137,48 @@ func parseSize(s string) (photoSize, error) {
 		return photoSize{}, nil
 	}
 	return photoSize{bound: frameo.Size(n), variant: fmt.Sprintf("%dpx", n), probe: true}, nil
+}
+
+// parseScale reads -scale. -fit is the older spelling of -scale fit, so the
+// two may be given together only when they agree.
+func parseScale(s string, fit bool) (frameo.Scale, error) {
+	var scale frameo.Scale
+	switch s {
+	case "":
+		return frameo.ScaleDefault, nil
+	case "fill":
+		scale = frameo.ScaleFill
+	case "fit":
+		scale = frameo.ScaleFit
+	case "none":
+		scale = frameo.ScaleNone
+	default:
+		return 0, fmt.Errorf("-scale %q: expected fill, fit or none", s)
+	}
+	if fit && scale != frameo.ScaleFit {
+		return 0, fmt.Errorf("-fit and -scale %s disagree", s)
+	}
+	return scale, nil
+}
+
+// parseFocus reads -focus as x,y, each from 0 to 1. Empty means the middle,
+// which the library supplies.
+func parseFocus(s string) (*[2]float32, error) {
+	if s == "" {
+		return nil, nil
+	}
+	bad := fmt.Errorf("-focus %q: expected x,y with each from 0 to 1, such as 0.5,0.3", s)
+	xs, ys, ok := strings.Cut(s, ",")
+	if !ok {
+		return nil, bad
+	}
+	x, errX := strconv.ParseFloat(strings.TrimSpace(xs), 32)
+	y, errY := strconv.ParseFloat(strings.TrimSpace(ys), 32)
+	// A NaN fails both comparisons, so it is refused along with the rest.
+	if errX != nil || errY != nil || !(x >= 0 && x <= 1 && y >= 0 && y <= 1) {
+		return nil, bad
+	}
+	return &[2]float32{float32(x), float32(y)}, nil
 }
 
 func parseIDs(args []string) ([]int64, error) {

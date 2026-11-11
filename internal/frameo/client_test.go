@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"math/rand/v2"
 	"os"
 	"path/filepath"
@@ -1136,5 +1137,50 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 			t.Fatalf("%s never arrived at the frame", what)
 		case <-time.After(10 * time.Millisecond):
 		}
+	}
+}
+
+func TestSendPhotoScaleOverridesFit(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		fit   bool
+		scale frameo.Scale
+		want  int32
+	}{
+		{"default fills", false, frameo.ScaleDefault, 2},
+		{"default with fit", true, frameo.ScaleDefault, 1},
+		{"fill over fit", true, frameo.ScaleFill, 2},
+		{"fit", false, frameo.ScaleFit, 1},
+		{"none", false, frameo.ScaleNone, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			frame := frameotest.New()
+			c := setup(t, frame)
+			if _, err := c.SendPhoto(testCtx(t), frameo.Photo{
+				Path: writePhoto(t, 1000), Fit: tc.fit, Scale: tc.scale,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if got := int32(frame.Photos()[0].Media.GetScaleType()); got != tc.want {
+				t.Errorf("scale type = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSendPhotoRefusesAFocusOutsideThePhoto(t *testing.T) {
+	frame := frameotest.New()
+	c := setup(t, frame)
+	nan := float32(math.NaN())
+	for _, centre := range [][2]float32{{-0.1, 0.5}, {0.5, 1.1}, {nan, 0.5}} {
+		centre := centre
+		if _, err := c.SendPhoto(testCtx(t), frameo.Photo{
+			Path: writePhoto(t, 1000), Center: &centre,
+		}); err == nil {
+			t.Errorf("focus %v was sent", centre)
+		}
+	}
+	if n := len(frame.Photos()); n != 0 {
+		t.Errorf("the frame holds %d photos, want 0", n)
 	}
 }
