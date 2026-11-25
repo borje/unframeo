@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -55,6 +56,8 @@ Options:
                      local network first and fall back (default auto)
   -discover <dur>    how long to look for the frame on the local network
                      (default 2s)
+  -addr <host:port>  connect directly to this paired frame address; requires
+                     -net local and skips mDNS discovery
   -caption <text>    caption to send with a photo
   -out <path>        where get writes: a file for one photo, a directory for many
   -size <which>      which stored copy get asks for: full, preview, or a
@@ -136,6 +139,7 @@ type options struct {
 	timeout       time.Duration
 	network       string
 	discover      time.Duration
+	localAddr     string
 	configPath    string
 	server        string
 	verbose       bool
@@ -166,6 +170,7 @@ func run(args []string, stdout io.Writer) error {
 	fs.DurationVar(&o.timeout, "timeout", 15*time.Minute, "give up after this long")
 	fs.StringVar(&o.network, "net", networkAuto, "local, relay or auto")
 	fs.DurationVar(&o.discover, "discover", 2*time.Second, "how long to look for the frame on the local network")
+	fs.StringVar(&o.localAddr, "addr", "", "direct frame host:port; requires -net local")
 	fs.StringVar(&o.configPath, "config", "", "configuration file")
 	fs.StringVar(&o.server, "server", "", "grid server to use")
 	fs.BoolVar(&o.verbose, "v", false, "log the protocol exchange")
@@ -183,6 +188,14 @@ func run(args []string, stdout io.Writer) error {
 	// wrong-route-without-saying-so that -net is checked to prevent.
 	if o.discover <= 0 {
 		return fmt.Errorf("-discover %v: expected a positive duration", o.discover)
+	}
+	if o.localAddr != "" {
+		if o.network != networkLocal {
+			return errors.New("-addr requires -net local")
+		}
+		if _, err := directEndpoint(o.localAddr); err != nil {
+			return err
+		}
 	}
 	var err error
 	if o.size, err = parseSize(o.sizeFlag); err != nil {
@@ -522,6 +535,16 @@ func connectLocal(ctx context.Context, cfg *config.Config, o *options, peer sdg.
 	if err != nil {
 		return nil, none, err
 	}
+	if o.localAddr != "" {
+		ep, err := directEndpoint(o.localAddr)
+		if err != nil {
+			return nil, none, err
+		}
+		dial, cancel := context.WithTimeout(ctx, localDialTimeout)
+		defer cancel()
+		p, err := sdg.DialLocal(dial, ep, peer, id, sdg.LocalProtocol, &sdg.Options{Logger: o.logger()})
+		return p, ep, err
+	}
 
 	look, cancel := context.WithTimeout(ctx, o.discover)
 	defer cancel()
@@ -550,6 +573,15 @@ func connectLocal(ctx context.Context, cfg *config.Config, o *options, peer sdg.
 		return nil, ep, err
 	}
 	return p, ep, nil
+}
+
+func directEndpoint(address string) (sdg.Endpoint, error) {
+	host, port, err := net.SplitHostPort(address)
+	n, numberErr := strconv.Atoi(port)
+	if err != nil || host == "" || numberErr != nil || n < 1 || n > 65535 {
+		return sdg.Endpoint{}, fmt.Errorf("-addr %q: expected host:port with port 1..65535", address)
+	}
+	return sdg.Endpoint{Host: host, Port: n}, nil
 }
 
 // cmdDiscover reports the frames advertising themselves on this network,
