@@ -55,6 +55,7 @@ when it connects. `pair` saves `user@host` as this client's; `name` shows it and
     -frame <name>        which paired frame to use (default: the first paired)
     -net <how>           local, relay or auto (default auto)
     -discover <dur>      how long to look for the frame locally (default 2s)
+    -addr <host:port>     direct frame address; requires -net local, skips mDNS
     -caption <text>      caption to send with a photo
     -fit                 fit the whole photo on screen instead of cropping
     -out <path>          where get writes: a file for one photo, a directory
@@ -73,6 +74,12 @@ A frame on the same network is reached directly, which skips the relay and is
 several times faster; one elsewhere is reached through it. `-net local` and
 `-net relay` force the choice, and a network that blocks multicast falls back
 to the relay silently unless `-v` is given.
+
+If multicast discovery is unavailable but the frame's address is known, use
+`unframeo -net local -addr 192.0.2.10:34541 send photo.jpg`, substituting the
+frame's actual address and port. Pair the frame first as usual. The direct
+connection still verifies its paired identity; specifying an address does
+not use a grid server or relay.
 
 The frame does not scale a photo to order: it keeps the original and a preview
 whose long side is 570 pixels, and `-size` only chooses between them -- though
